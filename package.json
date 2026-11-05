@@ -1,0 +1,12 @@
+{
+  "name": "rikkahub-workspace",
+  "private": true,
+  "scripts": {
+    "dev:backend": "node scripts/dev-backend.mjs",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:frontend": "npm --prefix frontend run build"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

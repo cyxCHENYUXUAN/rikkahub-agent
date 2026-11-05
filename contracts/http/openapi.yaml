@@ -1,0 +1,963 @@
+openapi: 3.1.0
+info:
+  title: RikkaHub Agent API
+  version: 0.5.0
+  description: |
+    Local single-user text chat API. All paths require a validated local Host and Origin.
+    Authenticate using the local token header or a trusted-origin HttpOnly cookie.
+    Chat/configuration writes and task resume use Idempotency-Key: the same scope/key/body replays the saved response;
+    another body conflicts. Retry ambiguous timeouts with the original key and body.
+    Only implemented operations are listed; uploads are not available. Workspace
+    tools (read/write/edit/glob/grep/shell/terminal) execute with the host account's
+    authority once their policy or a single-use approval allows them; shell and
+    terminal are arbitrary code execution, never an OS sandbox. The terminal is an
+    explicit PIPE channel: resize is unsupported. Orchestration defaults to observe;
+    model recommendations never grant authority. Trigger intake deduplicates by
+    source/externalId; acceptance deduplicates by Eval; resume keys persist in Assignments.
+security:
+  - LocalToken: []
+  - LocalCookie: []
+paths:
+  /api/v1/setup/session:
+    get:
+      operationId: bootstrapSession
+      summary: Establish the local browser cookie
+      description: |
+        Requires a trusted Origin or Sec-Fetch-Site same-origin, or a valid local token.
+        Sets RikkaHub-Local-Session with HttpOnly, SameSite=Strict and Path=/api/.
+        Browser EventSource uses this cookie without custom headers.
+      security:
+        - {}
+        - LocalToken: []
+      responses:
+        '204':
+          description: Cookie established; no body
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/providers:
+    get:
+      operationId: listProviders
+      summary: List saved provider configurations without secret values
+      responses:
+        '200':
+          description: Providers ordered by creation time and ID
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Provider' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createProvider
+      summary: Create an OpenAI-compatible provider
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProviderCreate' }
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Provider' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/assistants:
+    get:
+      operationId: listAssistants
+      summary: List saved assistant profiles
+      responses:
+        '200':
+          description: Assistants ordered by creation time and ID
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Assistant' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createAssistant
+      summary: Create a text assistant
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssistantCreate' }
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Assistant' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/approvals:
+    get:
+      operationId: listApprovals
+      summary: List durable approval projections for one session
+      description: >-
+        Bounded to the 100 most recent rows of the session. The status settles only
+        through the writer's ApprovalDecidedEvent; an HTTP decision is an intent,
+        never a settlement.
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Approvals ordered by asked sequence, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Approval' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/approvals/{id}:
+    post:
+      operationId: decideApproval
+      summary: Record a single-use approval decision
+      description: >-
+        A 202 records the decision for the waiting writer. The same key and body
+        replay the recorded response; any other body conflicts. A decision recorded
+        but not committed by the writer authorizes nothing and fails closed on
+        restart. shell/terminal calls execute with the full host-account authority
+        once allowed; they are not sandboxed to the workspace.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision]
+              properties:
+                decision:
+                  type: string
+                  enum: [allowed-once, rejected]
+      responses:
+        '202':
+          description: Decision recorded for the waiting writer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/sessions/{id}/tool-outputs/{reference}:
+    get:
+      operationId: readToolOutput
+      summary: Read a byte range of a durable tool output
+      description: >-
+        Bounded to 262144 bytes per request. References are session-bound; another
+        session's reference is indistinguishable from a missing one. Truncated
+        outputs keep their durable reference but never re-run their side effect.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/Id' }
+        - name: reference
+          in: path
+          required: true
+          schema: { type: string, pattern: '^out_[0-9a-f]{32}$' }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 0, maximum: 262144, default: 262144 } }
+      responses:
+        '200':
+          description: The requested byte range with identity headers
+          headers:
+            X-Tool-Output-Total-Bytes: { schema: { type: integer } }
+            X-Tool-Output-Truncated: { schema: { type: boolean } }
+            X-Tool-Output-Status: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: byte }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/models:
+    get:
+      operationId: listConfiguredModels
+      summary: List distinct models referenced by saved assistants
+      description: This is a local configuration view, not remote model discovery.
+      responses:
+        '200':
+          description: Distinct provider/model/context-budget combinations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [providerId, model, contextBudgetTokens]
+                  properties:
+                    providerId: { $ref: '#/components/schemas/Id' }
+                    model: { type: string }
+                    contextBudgetTokens: { type: integer, minimum: 1 }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      summary: List the most recently updated conversations
+      description: Includes active and archived conversations; at most 200 entries.
+      responses:
+        '200':
+          description: Ordered by updatedAt descending then ID
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 200
+                items: { $ref: '#/components/schemas/Conversation' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: createConversation
+      summary: Atomically create a conversation and its event session
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [assistantId]
+              properties:
+                assistantId: { $ref: '#/components/schemas/Id' }
+                title: { type: [string, 'null'], maxLength: 200, description: Blank or absent uses the default title. }
+      responses:
+        '201':
+          description: Created or idempotently replayed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conversation' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/conversations/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      operationId: getConversation
+      summary: Read a conversation including its durable sequence and metadata version
+      responses:
+        '200':
+          description: Conversation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conversation' }
+        default: { $ref: '#/components/responses/Problem' }
+    patch:
+      operationId: updateConversation
+      summary: Rename an active conversation or set its tool/approval policy override
+      description: |
+        Model execution changes lastSeq, not metadataVersion. Policy fields are
+        optional; null clears an override. The effective policy is resolved at
+        turn start (conversation override > assistant > safe defaults), so a
+        change applies to the next turn and never mutates the frozen current turn.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [metadataVersion]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 200, pattern: '\S' }
+                metadataVersion: { type: integer, format: int64, minimum: 0 }
+                toolPermissionMode:
+                  oneOf:
+                    - { type: string, enum: [READ_ONLY, WORKSPACE_WRITE, FULL_ACCESS] }
+                    - { type: 'null' }
+                approvalPolicy:
+                  oneOf:
+                    - { type: string, enum: [ASK, NEVER] }
+                    - { type: 'null' }
+                toolRules:
+                  description: Array of ToolRule (same schema as assistant) or null to clear.
+                  oneOf:
+                    - type: array
+                      maxItems: 64
+                      items: { $ref: '#/components/schemas/ToolRule' }
+                    - type: 'null'
+      responses:
+        '200':
+          description: Updated or idempotently replayed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Conversation' }
+        default: { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: archiveConversation
+      summary: Soft-archive a conversation and cancel its active work
+      description: |
+        Messages and events are retained and readable; future sends are rejected.
+        Archive and delayed activation share a lifecycle boundary, so a stale HTTP-completion
+        callback cannot create a writer after archive. Active work is cancelled and its writer
+        is drained outside database transactions before capacity is released. Unconsumed inputs
+        remain retained but are not automatically executed. Idempotent replay can finish retirement.
+        An unconfirmed drain returns RECOVERY_REQUIRED rather than releasing the live writer.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '204': { description: Archived or idempotently replayed; no body }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/conversations/{id}/messages:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      operationId: listMessages
+      summary: Read the active message surface and streaming placeholders
+      description: At most 1000 entries; this query projection is not the model-history source.
+      responses:
+        '200':
+          description: Surface order then source sequence
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 1000
+                items: { $ref: '#/components/schemas/Message' }
+        default: { $ref: '#/components/responses/Problem' }
+    post:
+      operationId: sendMessage
+      summary: Durably enqueue text input, then activate after HTTP completion
+      description: |
+        202 means the inbox input and idempotent response committed, not model success.
+        No user-message projection is created by this request. The Agent commits that projection
+        when it consumes the input. Replaying this request can wake still-pending work but cannot
+        duplicate a consumed input. Execution failures are reported through durable events/SSE.
+        New input reserves one of 64 running/activating conversation slots before the inbox transaction;
+        if capacity is full, HTTP 503 OVERLOADED leaves no new inbox input. Retry with the same key/body.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [content]
+              properties:
+                content:
+                  type: array
+                  minItems: 1
+                  maxItems: 32
+                  description: Sum of text lengths must not exceed 262144 Java UTF-16 code units.
+                  items: { $ref: '#/components/schemas/TextInput' }
+                target: { type: [string, 'null'], enum: [NEXT_TURN, NEXT_STEP, null], default: NEXT_TURN }
+      responses:
+        '202':
+          description: Accepted or idempotently replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [inputId]
+                properties:
+                  inputId: { $ref: '#/components/schemas/Id' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/conversations/{id}/turns/{turn}/cancel:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+      - name: turn
+        in: path
+        required: true
+        schema: { type: integer, minimum: 1 }
+    post:
+      operationId: cancelTurn
+      summary: Request cancellation of the specified running turn
+      description: Returns 409 if that turn is not running; cancellation settles asynchronously.
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '202':
+          description: Cancellation accepted or idempotently replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [turn]
+                properties:
+                  turn: { type: integer, minimum: 1 }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/conversations/{id}/stream:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      operationId: streamConversation
+      summary: Subscribe to live events with durable replay
+      description: |
+        Only session.committed has an SSE id; other events are transient. See ../sse/events.yaml.
+        Subscribes before reading the high-water mark. The browser uses the local cookie.
+        A slow connection can close; reconnect from the last durable id and deduplicate by sequence.
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+          description: 'sessionId:seq; must match this conversation. Overrides the initial after query on automatic reconnect.'
+      responses:
+        '200':
+          description: SSE stream; no-cache, X-Accel-Buffering no
+          content:
+            text/event-stream:
+              schema: { type: string }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/sessions/{id}/events:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      operationId: readSessionEvents
+      summary: Page the authoritative event log
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 256, default: 256 }
+      responses:
+        '200':
+          description: Events strictly after the cursor; after cannot exceed lastSeq
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId, after, lastSeq, events, nextSeq]
+                properties:
+                  sessionId: { $ref: '#/components/schemas/Id' }
+                  after: { type: integer, format: int64, minimum: 0 }
+                  lastSeq: { type: integer, format: int64, minimum: 0 }
+                  nextSeq: { type: integer, format: int64, minimum: 0 }
+                  events:
+                    type: array
+                    maxItems: 256
+                    items: { $ref: '#/components/schemas/SessionEvent' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/sessions/{id}/compaction:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    post:
+      operationId: compactSession
+      summary: Manually compact an idle session
+      description: >
+        Requires an idle session. Runs one summary model call and appends
+        compaction/start, compaction/summary, a surface replacement, and
+        compaction/end. Original events remain.
+      responses:
+        '200':
+          description: Compaction applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [compactionId, summarized]
+                properties:
+                  compactionId: { type: string }
+                  summarized: { type: boolean }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/sessions/{id}/compaction/{seq}/abandon:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+      - { name: seq, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+    post:
+      operationId: abandonCompaction
+      summary: Abandon an unpaired compaction start
+      responses:
+        '204': { description: Compaction closed as abandoned }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/memories:
+    get:
+      operationId: listMemories
+      summary: List user memory documents
+      responses:
+        '200':
+          description: Memory documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MemoryDocument' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/memories/search:
+    get:
+      operationId: searchMemories
+      summary: Search memory with FTS5
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string, maxLength: 256 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 50, default: 10 } }
+      responses:
+        '200':
+          description: Bounded memory hits
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MemoryHit' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/memories/{id}:
+    parameters:
+      - { $ref: '#/components/parameters/Id' }
+    get:
+      operationId: readMemory
+      summary: Read one memory document
+      responses:
+        '200':
+          description: Memory document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemoryDocument' }
+        default: { $ref: '#/components/responses/Problem' }
+    put:
+      operationId: saveMemory
+      summary: Create or replace a memory document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [title, body]
+              properties:
+                title: { type: string, minLength: 1, maxLength: 256 }
+                body: { type: string, maxLength: 262144 }
+      responses:
+        '200':
+          description: Saved memory document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MemoryDocument' }
+        default: { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteMemory
+      summary: Delete a memory document
+      responses:
+        '204': { description: Deleted }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/memories/refresh:
+    post:
+      operationId: refreshMemories
+      summary: Rebuild the memory index from Markdown
+      responses:
+        '200': { description: Refreshed }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/memories/extract:
+    post:
+      operationId: extractMemories
+      summary: Extract review candidates into data/memory/inbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sessionId]
+              properties:
+                sessionId: { $ref: '#/components/schemas/Id' }
+      responses:
+        '200':
+          description: Extraction completed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [candidates]
+                properties:
+                  candidates: { type: integer, minimum: 0 }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/usage:
+    get:
+      operationId: usageTotals
+      summary: Aggregate token and cost usage
+      parameters:
+        - { name: sessionId, in: query, required: false, schema: { $ref: '#/components/schemas/Id' } }
+      responses:
+        '200':
+          description: Usage totals
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UsageTotals' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/usage/by-model:
+    get:
+      operationId: usageByModel
+      summary: Aggregate usage by provider and model
+      responses:
+        '200':
+          description: Usage by model
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UsageModel' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/usage/by-day:
+    get:
+      operationId: usageByDay
+      summary: Aggregate usage by UTC day
+      responses:
+        '200':
+          description: Usage by day
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/UsageDay' }
+        default: { $ref: '#/components/responses/Problem' }
+  /api/v1/capabilities:
+    get:
+      operationId: capabilities
+      summary: Report configuration-gated capabilities
+      responses:
+        '200':
+          description: Capability flags; false means explicitly unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: boolean }
+        default: { $ref: '#/components/responses/Problem' }
+
+  /api/v1/orchestration:
+    $ref: './orchestration.yaml#/components/pathItems/Snapshot'
+  /api/v1/orchestration/todos:
+    $ref: './orchestration.yaml#/components/pathItems/Todos'
+  /api/v1/orchestration/triggers:
+    $ref: './orchestration.yaml#/components/pathItems/Triggers'
+  /api/v1/orchestration/webhooks/{source}:
+    $ref: './orchestration.yaml#/components/pathItems/Webhooks'
+  /api/v1/orchestration/evals/{id}/accept:
+    $ref: './orchestration.yaml#/components/pathItems/Accept'
+  /api/v1/orchestration/evals/{id}/resolve:
+    $ref: './orchestration.yaml#/components/pathItems/Resolve'
+  /api/v1/orchestration/evals/{id}/evaluate:
+    $ref: './orchestration.yaml#/components/pathItems/Evaluate'
+  /api/v1/orchestration/tickets/{id}/messages:
+    $ref: './orchestration.yaml#/components/pathItems/TicketMessages'
+  /api/v1/orchestration/tickets/{id}/replies:
+    $ref: './orchestration.yaml#/components/pathItems/TicketReplies'
+  /api/v1/orchestration/tickets/{id}/stop:
+    $ref: './orchestration.yaml#/components/pathItems/Stop'
+  /api/v1/orchestration/tickets/{id}/close:
+    $ref: './orchestration.yaml#/components/pathItems/Close'
+  /api/v1/orchestration/sources:
+    $ref: './orchestration.yaml#/components/pathItems/Sources'
+  /api/v1/orchestration/sources/{id}:
+    $ref: './orchestration.yaml#/components/pathItems/Source'
+  /api/v1/orchestration/work/{queue}/{id}/acknowledge:
+    $ref: './orchestration.yaml#/components/pathItems/AcknowledgeWork'
+  /api/v1/mcp/servers:
+    $ref: './orchestration.yaml#/components/pathItems/McpServers'
+  /api/v1/mcp/servers/{id}/connect:
+    $ref: './orchestration.yaml#/components/pathItems/McpConnect'
+  /api/v1/mcp/servers/{id}/connection:
+    $ref: './orchestration.yaml#/components/pathItems/McpDisconnect'
+components:
+  securitySchemes:
+    LocalToken:
+      type: apiKey
+      in: header
+      name: X-RikkaHub-Token
+      description: Local token from the private data/config/local-token file; never put it in a URL.
+    LocalCookie:
+      type: apiKey
+      in: cookie
+      name: RikkaHub-Local-Session
+      description: HttpOnly SameSite=Strict cookie; additionally requires a trusted Origin or same-origin fetch metadata.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' }
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { $ref: '#/components/schemas/Id' }
+  responses:
+    Problem:
+      description: |
+        Safe ProblemDetail with stable code, traceId and details. See ../errors/codes.yaml.
+        400 validation, 403 local access, 404 missing resource, 409 conflict,
+        503 overload/unavailability, or 500 internal failure. No secret or stack trace is returned.
+      headers:
+        X-Trace-Id:
+          schema: { type: string }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetail' }
+  schemas:
+    Id:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: '^[A-Za-z0-9._:-]+$'
+    ProblemDetail:
+      type: object
+      required: [type, title, status, code, traceId, details]
+      properties:
+        type: { type: string, format: uri-reference }
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string }
+        instance: { type: string, format: uri-reference }
+        code: { type: string }
+        traceId: { type: string }
+        details: { type: object, additionalProperties: true }
+    ProviderCreate:
+      type: object
+      additionalProperties: false
+      required: [name, baseUrl]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        baseUrl: { type: string, format: uri, maxLength: 2048, description: HTTP(S) endpoint without userinfo/query/fragment. }
+        credentialRef: { type: [string, 'null'], pattern: '^env:[A-Z_][A-Z0-9_]{0,127}$', description: Environment or private Spring property reference; not a secret value. }
+    Provider:
+      type: object
+      required: [id, name, type, baseUrl, credentialRef, credentialConfigured, enabled, version]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        type: { type: string, const: openai-compatible }
+        baseUrl: { type: string, format: uri }
+        credentialRef: { type: [string, 'null'] }
+        credentialConfigured: { type: boolean }
+        enabled: { type: boolean }
+        version: { type: integer, format: int64, minimum: 0 }
+    ToolRule:
+      type: object
+      additionalProperties: false
+      required: [tool, decision]
+      description: First matching rule wins. Regexes accept only bounded non-repeating patterns.
+      properties:
+        tool: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$|^\*$', description: Tool name or the wildcard *. }
+        decision: { type: string, enum: [ALLOW, ASK, DENY] }
+        pathGlob:
+          type: [string, 'null']
+          maxLength: 256
+          description: Applies the rule only to relative workspace paths matching this glob.
+        commandRegex:
+          type: [string, 'null']
+          maxLength: 256
+          description: Applies the rule only when the JSON-encoded argv matches this bounded regex.
+    Approval:
+      type: object
+      description: >-
+        Durable approval projection. requestedDecision is the HTTP-recorded intent;
+        state settles only when the writer commits the ApprovalDecidedEvent.
+      required: [id, sessionId, callId, toolName, turn, argumentsJson, argumentsDigest, state, askedSeq]
+      properties:
+        id: { type: string }
+        sessionId: { type: string }
+        callId: { type: string }
+        toolName: { type: string }
+        reason: { type: [string, 'null'] }
+        turn: { type: integer, minimum: 0 }
+        argumentsJson: { type: string, description: Raw tool arguments for the approver's judgement. }
+        argumentsDigest: { type: string, description: SHA-256 hex of argumentsJson; binds the decision to the request. }
+        state:
+          type: string
+          enum: [PENDING, allowed-once, rejected, cancelled, unavailable]
+        requestedDecision: { type: [string, 'null'], enum: [allowed-once, rejected, null] }
+        decisionNote: { type: [string, 'null'] }
+        expiresAt: { type: [string, 'null'], format: date-time }
+        askedSeq: { type: integer, minimum: 0 }
+        decidedSeq: { type: [integer, 'null'], minimum: 1 }
+    AssistantCreate:
+      type: object
+      additionalProperties: false
+      required: [name, providerId, model]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string, minLength: 1, maxLength: 128 }
+        providerId: { $ref: '#/components/schemas/Id' }
+        model: { type: string, minLength: 1, maxLength: 256 }
+        systemPrompt: { type: [string, 'null'], maxLength: 262144, default: '' }
+        contextWindowTokens: { type: integer, minimum: 1, maximum: 2000000, default: 8192 }
+        maxOutputTokens: { type: integer, minimum: 1, maximum: 1000000, default: 4096, description: Must not exceed contextWindowTokens. }
+        temperature: { type: number, minimum: 0, maximum: 2, default: 0.7 }
+        toolPermissionMode:
+          type: string
+          enum: [READ_ONLY, WORKSPACE_WRITE, FULL_ACCESS]
+          default: WORKSPACE_WRITE
+          description: >-
+            Read-only denies every write or execution tool. Workspace-write allows
+            workspace file tools and asks before shell/terminal. Full access allows
+            every advertised tool without an approval prompt (host-account authority,
+            not an OS sandbox).
+        approvalPolicy:
+          type: string
+          enum: [ASK, NEVER]
+          default: ASK
+          description: >-
+            ASK consults the approval queue before each approved-by-policy execution;
+            NEVER denies every call that would have asked. Single-use decisions are
+            stored under the approval id, never as a standing grant.
+        toolRules:
+          type: array
+          maxItems: 64
+          default: []
+          items: { $ref: '#/components/schemas/ToolRule' }
+    Assistant:
+      type: object
+      required: [id, name, providerId, model, systemPrompt, contextWindowTokens, generation, version]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        name: { type: string }
+        providerId: { $ref: '#/components/schemas/Id' }
+        model: { type: string }
+        systemPrompt: { type: string }
+        contextWindowTokens: { type: integer, minimum: 1 }
+        toolPermissionMode: { type: string, enum: [READ_ONLY, WORKSPACE_WRITE, FULL_ACCESS] }
+        approvalPolicy: { type: string, enum: [ASK, NEVER] }
+        toolRules:
+          type: array
+          items: { $ref: '#/components/schemas/ToolRule' }
+        generation:
+          type: object
+          required: [temperature, topP, maxOutputTokens, stopSequences, extra]
+          properties:
+            temperature: { type: number }
+            topP: { type: number }
+            maxOutputTokens: { type: integer }
+            stopSequences: { type: array, items: { type: string } }
+            extra: { type: object, additionalProperties: true }
+        version: { type: integer, format: int64, minimum: 0 }
+    Conversation:
+      type: object
+      required: [id, title, assistantId, sessionId, status, lastSeq, metadataVersion, createdAt, updatedAt]
+      properties:
+        id: { $ref: '#/components/schemas/Id' }
+        title: { type: string }
+        assistantId: { $ref: '#/components/schemas/Id' }
+        sessionId: { $ref: '#/components/schemas/Id' }
+        status: { type: string, enum: [ACTIVE, ARCHIVED] }
+        lastSeq: { type: integer, format: int64, minimum: 0 }
+        metadataVersion: { type: integer, format: int64, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        toolPermissionMode:
+          description: Conversation override; null inherits the assistant.
+          type: [string, 'null']
+          enum: [READ_ONLY, WORKSPACE_WRITE, FULL_ACCESS, null]
+        approvalPolicy:
+          description: Conversation override; null inherits the assistant.
+          type: [string, 'null']
+          enum: [ASK, NEVER, null]
+        toolRules:
+          description: Conversation override; null inherits the assistant. Empty array means no rules.
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/ToolRule' }
+    TextInput:
+      type: object
+      additionalProperties: false
+      required: [type, text]
+      properties:
+        type: { type: string, const: text }
+        text: { type: string, minLength: 1, maxLength: 262144, pattern: '\S' }
+    ContentBlock:
+      type: object
+      required: [type]
+      description: Explicit kernel discriminator; response blocks may include historical tool results. Not a send-message input schema.
+      properties:
+        type: { type: string, enum: [text, image, tool_call, tool_result] }
+      additionalProperties: true
+    TokenUsage:
+      type: object
+      required: [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens]
+      properties:
+        inputTokens: { type: integer, minimum: 0 }
+        outputTokens: { type: integer, minimum: 0 }
+        cacheReadTokens: { type: [integer, 'null'], minimum: 0 }
+        cacheWriteTokens: { type: [integer, 'null'], minimum: 0 }
+    Message:
+      type: object
+      required: [id, anchorSeq, sourceSeq, role, status, content, usage, toolCallId, updatedAt]
+      properties:
+        id: { type: string }
+        anchorSeq: { type: integer, format: int64, minimum: 1 }
+        sourceSeq: { type: integer, format: int64, minimum: 1 }
+        role: { type: string, enum: [SYSTEM, USER, ASSISTANT, TOOL] }
+        status: { type: string, enum: [PENDING, STREAMING, COMPLETE, INTERRUPTED, ERROR] }
+        content: { type: array, items: { $ref: '#/components/schemas/ContentBlock' } }
+        usage:
+          anyOf:
+            - { $ref: '#/components/schemas/TokenUsage' }
+            - { type: 'null' }
+        toolCallId: { type: [string, 'null'] }
+        updatedAt: { type: string, format: date-time }
+    SessionEvent:
+      type: object
+      required: [seq, time, data, surface, ignorable]
+      properties:
+        seq: { type: integer, format: int64, minimum: 1 }
+        time: { type: string, format: date-time }
+        data:
+          type: object
+          required: [type]
+          description: Kernel session.event payload; type is the stable event discriminator, never a Java class name.
+          properties:
+            type: { type: string }
+          additionalProperties: true
+        surface:
+          type: [object, 'null']
+          description: Optional op and sourceEventSeqs; append/replace metadata is defined by the kernel contract.
+        ignorable: { type: boolean }
+    MemoryDocument:
+      type: object
+      required: [id, title, body, updatedAt]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        body: { type: string }
+        updatedAt: { type: string, format: date-time }
+    MemoryHit:
+      type: object
+      required: [id, title, snippet, score]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        snippet: { type: string }
+        score: { type: number }
+    UsageTotals:
+      type: object
+      properties:
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        cacheReadTokens: { type: integer, format: int64 }
+        cacheWriteTokens: { type: integer, format: int64 }
+        reasoningTokens: { type: integer, format: int64 }
+        costMicros: { type: integer, format: int64 }
+        records: { type: integer, format: int64 }
+    UsageModel:
+      type: object
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        costMicros: { type: integer, format: int64 }
+        records: { type: integer, format: int64 }
+    UsageDay:
+      type: object
+      properties:
+        day: { type: string }
+        inputTokens: { type: integer, format: int64 }
+        outputTokens: { type: integer, format: int64 }
+        costMicros: { type: integer, format: int64 }
+        records: { type: integer, format: int64 }

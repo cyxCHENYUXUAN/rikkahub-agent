@@ -1,0 +1,125 @@
+version: 1
+http:
+  contentType: application/problem+json
+  requiredFields: [type, title, status, code, traceId, details]
+  optionalFields: [detail, instance]
+  traceHeader: X-Trace-Id
+  details: Empty object unless a future contract explicitly defines safe structured details
+  safety: Never include credentials, provider response bodies, SQL, internal class names or stack traces
+  retry: Retry an ambiguous write with the original Idempotency-Key and original body, never a new key
+codes:
+  INVALID_REQUEST:
+    status: 400
+    meaning: Invalid JSON, identifier, text content, parameters or cursor bounds
+  INVALID_PROVIDER:
+    status: 400
+    meaning: Unsupported provider fields, URL or credential reference
+  INVALID_ASSISTANT:
+    status: 400
+    meaning: Unsupported assistant fields or invalid generation budgets
+  INVALID_TOOL_RULE:
+    status: 400
+    meaning: Tool rule decisions, patterns or permission modes are outside the supported contract
+  IDEMPOTENCY_KEY_REQUIRED:
+    status: 400
+    meaning: Missing or malformed Idempotency-Key
+  INVALID_EVENT_CURSOR:
+    status: 400
+    meaning: Last-Event-ID is malformed or belongs to another session
+  HOST_NOT_ALLOWED:
+    status: 403
+    meaning: Host is not a local loopback authority on the configured port
+  ORIGIN_NOT_ALLOWED:
+    status: 403
+    meaning: Foreign or malformed Origin, or unsupported CORS preflight
+  LOCAL_AUTH_REQUIRED:
+    status: 403
+    meaning: Missing local token or trusted-origin cookie authentication
+  NOT_FOUND:
+    status: 404
+    meaning: Conversation or event session does not exist
+  SESSION_NOT_FOUND:
+    status: 404
+    meaning: The referenced agent session does not exist
+  TOOL_OUTPUT_UNAVAILABLE:
+    status: 503
+    meaning: Durable tool output identity changed on disk; the output is not served
+  PROVIDER_NOT_FOUND:
+    status: 404
+    meaning: Referenced provider does not exist
+  ASSISTANT_NOT_FOUND:
+    status: 404
+    meaning: Referenced assistant does not exist
+  APPROVAL_NOT_FOUND:
+    status: 404
+    meaning: Referenced approval does not exist or the session query target is unknown
+  TOOL_OUTPUT_NOT_FOUND:
+    status: 404
+    meaning: The tool output reference is unknown, belongs to another session or is still pending
+  ASSISTANT_CONFLICT:
+    status: 409
+    meaning: An assistant with this ID already exists
+  APPROVAL_CONFLICT:
+    status: 409
+    meaning: The approval is expired, settled or already carries a conflicting decision
+  ASSISTANT_NOT_FOUND:
+    status: 404
+    meaning: Referenced assistant does not exist
+  IDEMPOTENCY_CONFLICT:
+    status: 409
+    meaning: Same scope and key were used with another canonical JSON request
+  REQUEST_IN_PROGRESS:
+    status: 409
+    meaning: The idempotent operation has not completed
+  VERSION_CONFLICT:
+    status: 409
+    meaning: Optimistic metadata or session commit version changed
+  PROVIDER_CONFLICT:
+    status: 409
+    meaning: Provider ID already exists
+  ASSISTANT_CONFLICT:
+    status: 409
+    meaning: Assistant ID already exists
+  CONVERSATION_ARCHIVED:
+    status: 409
+    meaning: Archived conversations cannot accept messages or metadata edits
+  TURN_NOT_RUNNING:
+    status: 409
+    meaning: Cancellation target is not the current open turn
+  RECOVERY_REQUIRED:
+    status: 409
+    meaning: Session cannot resume safely or an archived writer has not confirmed drain; do not start another writer
+  OVERLOADED:
+    status: 503
+    meaning: Conversation activation capacity, command queue, SSE admission or command wait limit reached
+    retry: Retry later using the original idempotent request for writes
+  SHUTTING_DOWN:
+    status: 503
+    meaning: Application has stopped accepting new conversation work
+  INTERRUPTED:
+    status: 503
+    meaning: HTTP command wait was interrupted; the write may already have committed
+  PROVIDER_DISABLED:
+    status: 503
+    meaning: Selected provider is disabled
+  PROVIDER_UNAVAILABLE:
+    status: 503
+    meaning: Selected provider implementation or runtime configuration is unavailable
+  PROVIDER_CREDENTIAL_UNAVAILABLE:
+    status: 503
+    meaning: Referenced private credential is not configured
+  INTERNAL_ERROR:
+    status: 500
+    meaning: Unexpected server failure with no internal error details exposed
+  ORCHESTRATION_CONFLICT:
+    status: 409
+    meaning: Ticket, Assignment or Mandate no longer permits the requested action
+  MCP_UNAVAILABLE:
+    status: 503
+    meaning: Configured MCP server could not connect or its credential reference is unavailable
+execution:
+  description: Errors after 202 belong to the Agent event stream, not the completed HTTP response
+  sseEvent: error
+  dataFields: [code, message]
+  durableSource: Session events including model/response, tool/result and turn/end
+  restart: Interrupted work is closed without automatically replaying a paid model or external tool

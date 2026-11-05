@@ -1,0 +1,261 @@
+# Path Items referenced by openapi.yaml; security is inherited from that document.
+components:
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+  responses:
+    Object:
+      description: Persisted resource; see docs/orchestration.md and the core Orchestration records
+      content:
+        application/json:
+          schema: { type: object, additionalProperties: true }
+    List:
+      description: Persisted resources in creation order
+      content:
+        application/json:
+          schema: { type: array, items: { type: object, additionalProperties: true } }
+    Problem:
+      description: Local authentication, validation, state conflict, resource-not-found or unavailable error
+      content:
+        application/problem+json:
+          schema: { type: object, required: [status, code, traceId, details] }
+  schemas:
+    AssistantInput:
+      type: object
+      additionalProperties: false
+      required: [assistantId]
+      properties:
+        assistantId: { type: string, minLength: 1, maxLength: 128 }
+    Intake:
+      type: object
+      additionalProperties: false
+      required: [source, externalId, threadKey, text]
+      properties:
+        source: { type: string, minLength: 1, maxLength: 128 }
+        externalId: { type: string, minLength: 1, maxLength: 256 }
+        threadKey: { type: string, minLength: 1, maxLength: 256 }
+        text: { type: string, minLength: 1, maxLength: 262144 }
+  pathItems:
+    Snapshot:
+      get:
+        operationId: orchestrationSnapshot
+        summary: Read Trigger/Thread/Eval/Mandate/Ticket/Assignment/Reply maps
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Todos:
+      get:
+        operationId: orchestrationTodos
+        summary: Read unresolved Evals, waiting/ready Tickets and DEAD effects/outbox
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Triggers:
+      post:
+        operationId: ingestTrigger
+        summary: Persist an observed event; source/externalId deduplicates without starting paid work
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Intake' }
+        responses:
+          '202': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Webhooks:
+      parameters:
+        - { name: source, in: path, required: true, schema: { type: string, pattern: '^[A-Za-z0-9_-]{1,64}$' } }
+      post:
+        operationId: localWebhookIntake
+        summary: Authenticated local webhook intake; never an anonymous public webhook
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [externalId, threadKey, text]
+                properties:
+                  externalId: { type: string, minLength: 1, maxLength: 256 }
+                  threadKey: { type: string, minLength: 1, maxLength: 256 }
+                  text: { type: string, minLength: 1, maxLength: 262144 }
+        responses:
+          '202': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Accept:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      post:
+        operationId: acceptEvaluation
+        summary: Freeze a 24-hour Mandate and enqueue a Worker; repeated acceptance returns the same Ticket
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantInput' }
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Evaluate:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      post:
+        operationId: requestAdvisoryEvaluation
+        summary: Explicitly request one paid model suggestion; never creates a Ticket or grants authority
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantInput' }
+        responses:
+          '202': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Resolve:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      post:
+        operationId: resolveEvaluation
+        summary: Ignore or stop an observed event without creating work
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [decision]
+                properties:
+                  decision: { type: string, enum: [IGNORE, STOP] }
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    TicketMessages:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      get:
+        operationId: workerMessages
+        summary: Read a Worker's message surface
+        responses:
+          '200': { $ref: '#/components/responses/List' }
+          default: { $ref: '#/components/responses/Problem' }
+      post:
+        operationId: resumeTicket
+        summary: Resume the same Mandate without a new Eval; replay the original key/body after ambiguous failure
+        parameters:
+          - { name: Idempotency-Key, in: header, required: true, schema: { type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$' } }
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [text]
+                properties:
+                  text: { type: string, minLength: 1, maxLength: 262144 }
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    TicketReplies:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      get:
+        operationId: workerReplies
+        summary: Read local replies; no external delivery occurs
+        responses:
+          '200': { $ref: '#/components/responses/List' }
+          default: { $ref: '#/components/responses/Problem' }
+    Stop:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      post:
+        operationId: stopTicket
+        summary: Revoke the Mandate and cancel execution; slots remain reserved until drain
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Close:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      post:
+        operationId: closeTicket
+        summary: Accept a result and close a Ticket after all Assignments have drained
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Sources:
+      get:
+        operationId: intervalSources
+        responses:
+          '200': { $ref: '#/components/responses/List' }
+          default: { $ref: '#/components/responses/Problem' }
+      post:
+        operationId: createIntervalSource
+        summary: Create a persistent interval source; ticks create observed intake, never auto-accept
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [threadKey, text, intervalSeconds]
+                properties:
+                  threadKey: { type: string, minLength: 1, maxLength: 256 }
+                  text: { type: string, minLength: 1, maxLength: 262144 }
+                  intervalSeconds: { type: integer, minimum: 60, maximum: 31536000 }
+        responses:
+          '201': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    Source:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      patch:
+        operationId: enableIntervalSource
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [enabled]
+                properties:
+                  enabled: { type: boolean }
+        responses:
+          '204': { description: Source enabled or disabled }
+          default: { $ref: '#/components/responses/Problem' }
+    McpServers:
+      get:
+        operationId: configuredMcpServers
+        summary: Configuration and live connection state; no credential values
+        responses:
+          '200': { $ref: '#/components/responses/List' }
+          default: { $ref: '#/components/responses/Problem' }
+    McpConnect:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      post:
+        operationId: connectMcpServer
+        summary: Initialize a configured MCP HTTP connection and discover namespaced tools
+        responses:
+          '200': { $ref: '#/components/responses/Object' }
+          default: { $ref: '#/components/responses/Problem' }
+    McpDisconnect:
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      delete:
+        operationId: disconnectMcpServer
+        responses:
+          '204': { description: Connection closed }
+          default: { $ref: '#/components/responses/Problem' }
+    AcknowledgeWork:
+      parameters:
+        - { $ref: '#/components/parameters/Id' }
+        - { name: queue, in: path, required: true, schema: { type: string, enum: [effects, outbox] } }
+      post:
+        operationId: acknowledgeDeadWork
+        summary: Record human inspection of DEAD work; never executes or retries the original effect
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [note]
+                properties:
+                  note: { type: string, minLength: 1, maxLength: 1024 }
+        responses:
+          '204': { description: DEAD work acknowledged with its error and audit note retained }
+          default: { $ref: '#/components/responses/Problem' }

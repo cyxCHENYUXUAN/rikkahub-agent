@@ -1,0 +1,85 @@
+version: 1
+connection:
+  path: /api/v1/conversations/{id}/stream
+  authentication: same-origin-cookie-or-local-token
+  cookie: RikkaHub-Local-Session
+  tokenHeader: X-RikkaHub-Token
+  heartbeatSeconds: 15
+  timeoutMilliseconds: 120000
+  maximumConnections: 32
+  queueCapacity: 256
+  replayPageSize: 256
+  cursor:
+    initial: 0
+    header: Last-Event-ID
+    query: after
+    format: '{sessionId}:{seq}'
+    rules:
+      - The header must identify this conversation's session.
+      - after is the nonnegative initial fallback; a valid Last-Event-ID takes precedence on reconnect.
+      - Cursors beyond the durable high-water mark are rejected before streaming starts.
+  replay:
+    - Register the subscription and buffer notices before obtaining the high-water mark.
+    - Read committed events strictly after the cursor in bounded pages up to the captured target.
+    - Advance the cursor only after sending the durable page; later commit notices extend the target.
+    - Reconnect using the last durable id; deduplicate page events by sessionId and event seq.
+    - Transient events are not replayed; rebuild final state from durable events or the message query.
+  backpressure:
+    - One serial sender per connection; producers never perform socket I/O.
+    - assistant.delta, assistant.reasoning and heartbeat may be dropped when the queue is full.
+    - Other queue overflow closes that connection; reconnect to recover durable state.
+    - Admission overload returns HTTP 503 OVERLOADED before streaming starts.
+  responseHeaders:
+    Cache-Control: no-cache
+    X-Accel-Buffering: 'no'
+events:
+  session.committed:
+    durability: durable
+    id: '{sessionId}:{seq}'
+    data:
+      sessionId: string
+      seq: Last event sequence in this page, not the first sequence of the commit
+      events: Array of authoritative SessionEvent objects; see ../http/openapi.yaml
+    replay: Database pages; page boundaries need not equal transaction boundaries
+  assistant.delta:
+    durability: ephemeral
+    droppable: true
+    data: { turn: integer, step: integer, block: integer, text: string }
+  assistant.reasoning:
+    durability: ephemeral
+    droppable: true
+    data: { turn: integer, step: integer, block: integer, text: string }
+  tool.call:
+    durability: ephemeral
+    data: ToolCall object from the kernel
+    availability: >-
+      P3 builtin tools (read/write/edit/glob/grep/shell/terminal) are registered per
+      conversation session; the durable tool/call session event remains authoritative
+  tool.result:
+    durability: ephemeral
+    data: { callId: string, result: ToolResult }
+  approval.request:
+    durability: ephemeral
+    data: ApprovalRequest object from the kernel
+    availability: >-
+      P3 opens GET /api/v1/approvals and POST /api/v1/approvals/{id}; the durable
+      approval/asked event and the approvals projection are authoritative
+  approval.resolved:
+    durability: ephemeral
+    data: { approvalId: string, outcome: ApprovalOutcome }
+  usage:
+    durability: ephemeral
+    data: { turn: integer, step: integer, usage: TokenUsage }
+    replay: Read durable usage/model events instead
+  turn.ended:
+    durability: ephemeral
+    data: { turn: integer, reason: TurnEndReason }
+    replay: Read the durable turn/end event instead
+  error:
+    durability: ephemeral
+    data: { code: string, message: string }
+    description: Safe execution failure, not an HTTP ProblemDetail after the stream has opened
+  heartbeat:
+    durability: ephemeral
+    droppable: true
+    data: { time: UTC instant }

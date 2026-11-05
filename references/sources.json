@@ -1,0 +1,32 @@
+{
+  "sources": [
+    {
+      "name": "DeepSeek Harness",
+      "url": "https://github.com/deepseek-ai/deepseek-harness",
+      "revision": null,
+      "license": null,
+      "status": "pending-verification"
+    },
+    {
+      "name": "dsh-superagent-prototype",
+      "url": "https://github.com/deepseek-ai/dsh-superagent-prototype",
+      "revision": null,
+      "license": null,
+      "status": "pending-verification"
+    },
+    {
+      "name": "Cordis",
+      "url": "https://github.com/cordiverse/cordis",
+      "revision": null,
+      "license": null,
+      "status": "pending-verification"
+    },
+    {
+      "name": "Legacy RikkaHub",
+      "localPath": "D:/PiAgent-Workspace/RikkaHub",
+      "revision": null,
+      "license": null,
+      "status": "pending-verification"
+    }
+  ]
+}
