@@ -9,20 +9,15 @@ echo ===================================================
 echo.
 
 :: 1. Locate Java runtime
-set "JAVA_CMD="
+set "JAVA_CMD=java"
 if defined JAVA_HOME (
     if exist "%JAVA_HOME%\bin\java.exe" (
         set "JAVA_CMD=%JAVA_HOME%\bin\java.exe"
     )
 )
 
-if not defined JAVA_CMD (
-    for /f "tokens=*" %%i in ('where java 2^>nul') do (
-        if not defined JAVA_CMD set "JAVA_CMD=%%i"
-    )
-)
-
-if not defined JAVA_CMD (
+"%JAVA_CMD%" -version >nul 2>&1
+if errorlevel 1 (
     echo [ERROR] Java 17+ was not found on your system!
     echo Please install JDK/JRE 17 or higher and set JAVA_HOME.
     echo Download: https://adoptium.net/
@@ -32,11 +27,24 @@ if not defined JAVA_CMD (
 )
 
 :: 2. Check Java version >= 17
-for /f "tokens=3" %%v in ('"%JAVA_CMD%" -version 2^>^&1 ^| findstr /i "version"') do (
-    set "RAW_VER=%%v"
+set "RAW_VER="
+for /f "tokens=3" %%v in ('java -version 2^>^&1 ^| findstr /i "version"') do (
+    set "RAW_VER=%%~v"
 )
+if not defined RAW_VER (
+    for /f "tokens=2" %%v in ('java -version 2^>^&1 ^| findstr /i "version"') do (
+        set "RAW_VER=%%~v"
+    )
+)
+
 set "RAW_VER=%RAW_VER:"=%"
-for /f "tokens=1 delims=." %%m in ("%RAW_VER%") do set "MAJOR_VER=%%m"
+for /f "tokens=1 delims=." %%m in ("%RAW_VER%") do (
+    set "MAJOR_VER=%%m"
+)
+
+if not defined MAJOR_VER (
+    set "MAJOR_VER=17"
+)
 
 if %MAJOR_VER% LSS 17 (
     echo [ERROR] Found Java version %RAW_VER%, but RikkaHub requires Java 17 or higher!
