@@ -117,3 +117,9 @@ P0–P5 在既定 v1 范围内已有完成及阶段验收记录，当前适合�
   - 临时验收套件：`R6CollaborationAndChannelsAcceptanceTest` 5 项端到端用例全部通过（Webhook 签名与防重放拦截、外部输入默认 Observe 安全隔离、Outbox 异步可靠投递收敛、Subagent 委派与级联取消、控制器 REST 端点连通性）。
   - 清理与架构门禁：验收通过后彻底删除临时测试源码，全量 `mvn clean verify -B` 12 模块通过（31.7s），4 项 ArchUnit 门禁 100% 通过，零测试 class 残留。
   - 产物 SHA-256：`dist/lib/backend.jar` 更新指纹为 `17FFD32E26E1C0BAD0E2BDF4E99BACC4781DE9BB705648680A3C627B9CE06B34`。详见 `.superpowers/r6-acceptance.json`。
+- F1 前端设计体系与交互升级交付（基于 `ui-ux-pro-max` & `frontend-design`）：
+  - 技能就绪：成功安装并激活 `ui-ux-pro-max` 与 Anthropic 官方 `frontend-design` 技能库于 `.agents/skills/`，生成专属深色专业开发者设计规范。
+  - 深度思考（Thinking Process）面板：在 `Chat.tsx` 与 `Shared.tsx` 中交付 `ThinkingBlock`，实时捕获流式 `assistant.reasoning` SSE 事件，呈现呼吸微光动态思考折叠与展开面板，对齐 DeepSeek R1 与 Claude 思维链交互规范。
+  - 多厂商模型与执行沙箱配置：在 `Settings.tsx` 中交付协议切换下拉（OpenAI Compatible / Anthropic Messages / Gemini Native）与 Stdio 本地子进程 MCP 工具支持；展示 ConPTY 伪终端与 Docker 容器隔离环境探测状态。
+  - 系统运维与协同网络面板：交付全新 `System.tsx` 页面，提供 R3 原生快照热备一键生成、`.rkpack` 下载与在线热恢复；提供 R6 Subagent 任务派发树监控、级联取消与 Webhook 签名安全防护指南。
+  - 设计体系重塑：基于 `index.css` 与 `App.css` 重塑 Dark Slate 沉稳低疲劳专业主题，完全杜绝模板化 AI 视觉；前端 0 warnings / 0 errors，内嵌资产同步至后端，单机 JAR（SHA-256: `560AB9D48C82DD6D608275E96803C46EDE791E53DAF7466A8643B7423C6DCA07`）启动烟测（HTTP 200）100% 通过。
